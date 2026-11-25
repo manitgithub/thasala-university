@@ -5,6 +5,9 @@ export { SCHOOLS, NO_SCHOOL, CROPS };
 
 export const SAVE_VERSION = 3;
 export const ROAD = { name: 'ถนน', cost: 6000, hintCost: 3000, upkeep: 150, color: '#b8c0b7' };
+// GOV: yearly state budget (paid in term 1) and per-student capitation (every term)
+export const GOV = { base: 1500000, perSchool: 300000, perReputation: 20000, perStudent: 600 };
+export const govBudget = state => Math.round((GOV.base + GOV.perSchool * (state.schools || []).length + GOV.perReputation * state.reputation) / 10000) * 10000;
 export const ECON = { tuition: 1800, perStudent: 500, startMoney: 5000000, startYear: 2535, hireFee: 30000, salary: 8000, perLecturer: 25 };
 export const MAX_LEVEL = 3;
 
@@ -885,6 +888,9 @@ export function tick(state, opts = {}) {
   const target = clamp(5 + satisfaction * 0.6 + Math.min(m.academic, 6) * 3.5 + Math.min(m.library, 3) * 3 + Math.min(m.hospital, 1) * 12 + Math.min(m.coop, 2) * 5 + Math.min(m.matches, 20) * 0.4 + Math.min(fx.reputation, 20) * 0.6 + ratioEffect, 0, 100);
   let reputation = clamp(state.reputation + (target - state.reputation) * 0.12, 0, 100);
   const income = Math.round(students * ECON.tuition * fx.tuition);
+  // state support: capitation for every enrolled student, plus the yearly budget at the start of each year
+  const capitation = students * GOV.perStudent;
+  const govGrant = state.term === 1 ? govBudget(state) : 0;
   const salary = state.lecturers * ECON.salary;
   const farmSalary = (state.workers || 0) * FARM.workerSalary;
   let expense = m.upkeep + students * ECON.perStudent + salary + farmSalary, grant = 0, grants = state.grants;
@@ -904,18 +910,19 @@ export function tick(state, opts = {}) {
   }
   expense += incidentCost;
   events.push(...incidentEvents);
-  const money = Math.round(state.money + income - expense + grant + researchIncome);
+  if (govGrant) events.push(`ได้รับงบประมาณแผ่นดินประจำปี ${state.year} • ${govGrant.toLocaleString('th-TH')} ฿`);
+  const money = Math.round(state.money + income - expense + grant + researchIncome + capitation + govGrant);
   const debtTerms = money < 0 ? state.debtTerms + 1 : 0;
   if (debtTerms >= 2) events.push('คำเตือน: เงินติดลบต่อเนื่องอย่างน้อย 2 เทอม • ชะลอการขยายและลดค่าใช้จ่าย');
   const termCount = (state.termCount || 0) + 1;
-  const summary = `พ.ศ. ${state.year} / เทอม ${state.term} • ${open ? `รับใหม่ ${enrolled} คน` : 'ยังไม่เปิดรับนักศึกษา'}${graduates ? ` • จบการศึกษา ${graduates} คน` : ''} • สุทธิ ${(income - expense + grant + researchIncome).toLocaleString('th-TH')} ฿`;
+  const summary = `พ.ศ. ${state.year} / เทอม ${state.term} • ${open ? `รับใหม่ ${enrolled} คน` : 'ยังไม่เปิดรับนักศึกษา'}${graduates ? ` • จบการศึกษา ${graduates} คน` : ''} • สุทธิ ${(income - expense + grant + researchIncome + capitation + govGrant).toLocaleString('th-TH')} ฿`;
   const farmed = farmTick({ ...state, termCount }, events);
   return progress({
     ...state, buildings: farmed.buildings, storage: farmed.storage, labourUsed: 0, harvests: farmed.harvests, perennialHarvests: farmed.perennialHarvests, researchTitles,
     seed, students, money: money + (farmed.money - state.money), roadCondition, safetyPenalty, incidents, reputation, satisfaction, debtTerms, grants, graduatesTotal: state.graduatesTotal + graduates,
     year: state.year + (state.term === 3 ? 1 : 0), term: state.term === 3 ? 1 : state.term + 1, termCount,
     researchActive, researchDone, researchOffers: makeOffers(seed, termCount, reputation),
-    lastFinance: { income, expense, salary, farmSalary, grant, researchIncome, enrolled, graduates, ratio: students ? ratio : 0 },
+    lastFinance: { income, expense, salary, farmSalary, grant, researchIncome, capitation, govGrant, enrolled, graduates, ratio: students ? ratio : 0 },
     log: [...events, summary, ...state.log].slice(0, 60),
   });
 }

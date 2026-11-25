@@ -155,7 +155,7 @@ function update() {
   }
   $('bulldoze').classList.toggle('selected', tool === 'bulldoze');
   const f = state.lastFinance;
-  $('finance').textContent = f ? `เทอมก่อน: ค่าเทอม ${number(f.income)} • งานวิจัย/ทุน ${number(f.researchIncome + f.grant)} • เงินเดือนอาจารย์ ${number(f.salary)} • เงินเดือนฟาร์ม ${number(f.farmSalary||0)} • รายจ่ายรวม ${number(f.expense)} ฿` : `ค่าเล่าเรียนพื้นฐาน ${number(ECON.tuition)} ฿ / คน / เทอม`;
+  $('finance').textContent = f ? `เทอมก่อน: ค่าเทอม ${number(f.income)} • งบรัฐ/ค่าหัว ${number((f.govGrant || 0) + (f.capitation || 0))} • งานวิจัย/ทุน ${number(f.researchIncome + f.grant)} • เงินเดือนอาจารย์ ${number(f.salary)} • รายจ่ายรวม ${number(f.expense)} ฿` : `ค่าเล่าเรียนพื้นฐาน ${number(ECON.tuition)} ฿ + ค่าหัวจากรัฐ 600 ฿ / คน / เทอม • งบประมาณแผ่นดินจ่ายทุกต้นปี`;
   const b = state.buildings.find(x => x.id === selected);
   if (b && ['farm','services'].includes(b.type)) { renderBuilding(b); }
   else if (selectedAgent && life.agents.some(a => a.id === selectedAgent)) {

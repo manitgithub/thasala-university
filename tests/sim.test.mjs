@@ -325,6 +325,16 @@ test('moving a building keeps level and costs 20% of its price', () => {
   assert.match(S.moveError(m, id, 0, 6), /อาคารอยู่แล้ว/);
 });
 
+test('state support: yearly budget in term 1 and per-student capitation', () => {
+  let s = rich(place(place(place(withAdmin(), 'lecture', 5, 6), 'dorm', 10, 6), 'canteen', 14, 6));
+  s = hireLecturers({ ...s, chapter: 1, stage: 0, term: 1, reputation: 50 }, 20);
+  const t = tick(s);
+  assert.equal(t.lastFinance.govGrant, S.govBudget(s));
+  assert.equal(t.lastFinance.capitation, t.students * S.GOV.perStudent);
+  assert.ok(t.log.some(l => l.includes('งบประมาณแผ่นดิน')));
+  assert.equal(tick(t).lastFinance.govGrant, 0, 'budget only once a year (term 1)');
+});
+
 test('ghost match bonus', () => {
   const s = withAdmin();
   const matched = place(s, 'lecture', 5, 6);
