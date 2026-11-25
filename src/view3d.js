@@ -8,6 +8,8 @@ import { agentPosition } from './life.js';
 const TILE_PX = 12; // terrain texture pixels per tile
 const COL = { O: '#3c5a45', G: '#8fb070', H: '#8fb070', R: '#8fb070', r: '#8fb070', W: '#5fa3bf' };
 
+// Person size in world units (1 tile = 1 unit). Lower = smaller people next to buildings.
+const PERSON_H = 0.55, PS = PERSON_H / 0.9;
 export function createView(canvas, MAP) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
@@ -593,7 +595,7 @@ export function createView(canvas, MAP) {
   const loader = new GLTFLoader();
   for (const def of characterModels) loader.load(def.url, gltf => {
     const box = new THREE.Box3().setFromObject(gltf.scene), size = new THREE.Vector3(); box.getSize(size);
-    characterData.set(def.key, { scene: gltf.scene, clips: gltf.animations, scale: 0.9 / Math.max(size.y, 0.001), minY: box.min.y, centerX: (box.min.x + box.max.x) / 2, centerZ: (box.min.z + box.max.z) / 2 });
+    characterData.set(def.key, { scene: gltf.scene, clips: gltf.animations, scale: PERSON_H / Math.max(size.y, 0.001), minY: box.min.y, centerX: (box.min.x + box.max.x) / 2, centerZ: (box.min.z + box.max.z) / 2 });
     characterPools.set(def.key, []);
   }, undefined, () => { /* low-poly instanced fallback remains active */ });
   function modelFor(a) {
@@ -606,24 +608,42 @@ export function createView(canvas, MAP) {
   function makeCharacter(key, facultyColor) {
     const data = characterData.get(key); if (!data) return null;
     const root = cloneSkinned(data.scene); root.scale.setScalar(data.scale); root.position.set(-data.centerX * data.scale, -data.minY * data.scale, -data.centerZ * data.scale);
+    // Recolour by body part: modular parts stack feet < legs < torso < head (sorted by height).
+    // Students: white shirt, school colour on the small top details, dark trousers, black shoes.
+    // Staff (suits): keep the suit, school colour only on the tie.
+    const isSuit = /Suit/i.test(key);
+    const meshes = []; root.traverse(o => { if (o.isMesh) meshes.push(o); });
+    // glTF splits each material into its own sub-mesh, so classify every piece by where it sits on the body.
+    root.updateMatrixWorld(true);
+    const boxes = new Map(meshes.map(o => [o, new THREE.Box3().setFromObject(o, true)]));
+    const all = new THREE.Box3(); for (const b of boxes.values()) all.union(b);
+    const H = Math.max(all.max.y - all.min.y, 1e-3);
+    const frac = o => { const b = boxes.get(o); return ((b.min.y + b.max.y) / 2 - all.min.y) / H; };
+    const tris = o => (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+    const cloth = m => !/skin|hair|eye|brow/i.test(m?.name || '');
+    const roleOf = o => { const f = frac(o); return f < 0.12 ? 'feet' : f < 0.55 ? 'legs' : f < 0.86 ? 'torso' : 'head'; };
+    const torsoCloth = meshes.filter(o => roleOf(o) === 'torso' && cloth(o.material));
+    const shirt = torsoCloth.sort((p, q) => tris(q) - tris(p))[0];
     const cacheKey = `${key}|${facultyColor}`;
     let replacements = materialCache.get(cacheKey);
     if (!replacements) {
       replacements = new Map();
-      root.traverse(o => {
-        if (!o.isMesh) return;
-        const orig = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of orig) {
-          if (!m || replacements.has(m)) continue;
-          const n = m.name || '';
-          const recolor = /^(Orange|Purple|Red_Dark|LightBlue|Blue|Green|Suit|Tie)$/i.test(n);
-          if (recolor) { const copy = m.clone(); copy.color.set(facultyColor || '#547a63'); replacements.set(m, copy); }
-          else replacements.set(m, m);
+      for (const o of meshes) {
+        const role = roleOf(o), m = o.material, k = `${role}|${o === shirt ? 'shirt' : ''}|${m.uuid}`;
+        if (replacements.has(k)) continue;
+        let colour = null;
+        if (isSuit) { if (/tie/i.test(m.name)) colour = facultyColor || '#547a63'; }
+        else if (cloth(m)) {
+          if (role === 'torso') colour = o === shirt ? '#f3f2ec' : (facultyColor || '#547a63');
+          else if (role === 'legs') colour = '#262a35';
+          else if (role === 'feet') colour = '#1b1b1d';
         }
-      });
+        if (colour) { const copy = m.clone(); copy.color.set(colour); replacements.set(k, copy); } else replacements.set(k, m);
+      }
       materialCache.set(cacheKey, replacements);
     }
-    root.traverse(o => { if (!o.isMesh) return; o.castShadow = true; o.frustumCulled = false; const remap = m => replacements.get(m) || m; o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material); });
+    for (const o of meshes) { const k = `${roleOf(o)}|${o === shirt ? 'shirt' : ''}|${o.material.uuid}`; o.material = replacements.get(k) || o.material; }
+    root.traverse(o => { if (!o.isMesh) return; o.castShadow = true; o.frustumCulled = false; });
     const visual = new THREE.Group(); visual.add(root);
     const mixer = new THREE.AnimationMixer(root), actions = {};
     for (const clip of data.clips) if (['Walk','Run','Idle','Wave','Interact'].includes(clip.name)) actions[clip.name] = mixer.clipAction(clip);
@@ -664,22 +684,22 @@ export function createView(canvas, MAP) {
     shown.forEach((a, i) => {
       if (assigned.has(a)) { tmp.position.set(0,-10000,0);tmp.scale.setScalar(0);tmp.updateMatrix(); bodies.setMatrixAt(i,tmp.matrix);heads.setMatrixAt(i,tmp.matrix);hair.setMatrixAt(i,tmp.matrix);arms.setMatrixAt(i*2,tmp.matrix);arms.setMatrixAt(i*2+1,tmp.matrix);legs.setMatrixAt(i*2,tmp.matrix);legs.setMatrixAt(i*2+1,tmp.matrix);return; }
       const p = agentPosition(life, a);
-      const bob = a.mode === 'walking' ? Math.abs(Math.sin(time / 120 + a.id)) * 0.04 : 0;
-      tmp.position.set(p.x, bob, p.y); tmp.rotation.set(0, 0, 0); tmp.scale.setScalar(1.9); tmp.updateMatrix();
+      const bob = a.mode === 'walking' ? Math.abs(Math.sin(time / 120 + a.id)) * 0.04 * PS : 0;
+      tmp.position.set(p.x, bob, p.y); tmp.rotation.set(0, 0, 0); tmp.scale.setScalar(1.9 * PS); tmp.updateMatrix();
       bodies.setMatrixAt(i, tmp.matrix); heads.setMatrixAt(i, tmp.matrix);
       hair.setMatrixAt(i,tmp.matrix);
       bodies.setColorAt(i,color.set(a.staff?'#547a63':'#f2f0e6'));
       for(let side=0;side<2;side++){
         const swing=a.mode==='walking'?Math.sin(time/100+a.id+side*Math.PI)*.45:0;
-        tmp.position.set(p.x+(side?-.1:.1),.31+bob,p.y);tmp.rotation.set(swing,0,side?-.08:.08);tmp.scale.setScalar(1.9);tmp.updateMatrix();arms.setMatrixAt(i*2+side,tmp.matrix);
-        tmp.position.set(p.x+(side?-.045:.045),.15+bob,p.y);tmp.rotation.set(-swing,0,0);tmp.updateMatrix();legs.setMatrixAt(i*2+side,tmp.matrix);
+        tmp.position.set(p.x+(side?-.1:.1)*PS,.31*PS+bob,p.y);tmp.rotation.set(swing,0,side?-.08:.08);tmp.scale.setScalar(1.9*PS);tmp.updateMatrix();arms.setMatrixAt(i*2+side,tmp.matrix);
+        tmp.position.set(p.x+(side?-.045:.045)*PS,.15*PS+bob,p.y);tmp.rotation.set(-swing,0,0);tmp.updateMatrix();legs.setMatrixAt(i*2+side,tmp.matrix);
       }
     });
     bodies.count = heads.count = hair.count = shown.length;arms.count=legs.count=shown.length*2;
     bodies.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = hair.instanceMatrix.needsUpdate=arms.instanceMatrix.needsUpdate=legs.instanceMatrix.needsUpdate=true;
     if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
     const riders=life.agents.filter(a=>a.mode!=='inside'&&!a.shuttle&&a.ride).slice(0,MAXP);
-    riders.forEach((a,i)=>{const p=agentPosition(life,a);tmp.position.set(p.x,.18,p.y);tmp.rotation.set(0,Math.atan2(a.x-p.x,a.y-p.y),0);tmp.scale.setScalar(1.8);tmp.updateMatrix();bikes.setMatrixAt(i,tmp.matrix);for(let w=0;w<2;w++){tmp.position.set(p.x+(w?-.2:.2),.11,p.y);tmp.rotation.set(Math.PI/2,0,0);tmp.scale.setScalar(1.8);tmp.updateMatrix();bikeWheels.setMatrixAt(i*2+w,tmp.matrix)}});bikes.count=riders.length;bikeWheels.count=riders.length*2;bikes.instanceMatrix.needsUpdate=bikeWheels.instanceMatrix.needsUpdate=true;
+    riders.forEach((a,i)=>{const p=agentPosition(life,a);tmp.position.set(p.x,(.18)*PS,p.y);tmp.rotation.set(0,Math.atan2(a.x-p.x,a.y-p.y),0);tmp.scale.setScalar(1.8*PS);tmp.updateMatrix();bikes.setMatrixAt(i,tmp.matrix);for(let w=0;w<2;w++){tmp.position.set(p.x+((w?-.2:.2))*PS,(.11)*PS,p.y);tmp.rotation.set(Math.PI/2,0,0);tmp.scale.setScalar(1.8*PS);tmp.updateMatrix();bikeWheels.setMatrixAt(i*2+w,tmp.matrix)}});bikes.count=riders.length;bikeWheels.count=riders.length*2;bikes.instanceMatrix.needsUpdate=bikeWheels.instanceMatrix.needsUpdate=true;
     const sel = life.agents.find(a => a.id === selectedId);
     ring.visible = !!sel && sel.mode !== 'inside';
     if (ring.visible) { const p = agentPosition(life, sel); ring.position.set(p.x, 0.04, p.y); }
