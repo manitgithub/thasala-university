@@ -21,7 +21,7 @@ const compact = n => (Math.abs(n) >= 1e6 ? `${(n / 1e6).toLocaleString('th-TH', 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const view = createView(canvas, MAP);
 const life = createLife(11);
-let selectedAgent = null, lifeSpeed = 1;
+let selectedAgent = null, selectedVehicle = null, lifeSpeed = 1;
 
 function notify(message) {
   $('toast').textContent = message; $('toast').classList.add('visible');
@@ -167,6 +167,10 @@ function update() {
   } else if (TYPES[tool]) {
     const t = TYPES[tool];
     $('info').innerHTML = `<span class="eyebrow">เตรียมก่อสร้าง</span><h2>${t.name}</h2><p>${t.description}</p><p>งบก่อสร้าง ${number(t.cost)} ฿<br>ค่าดูแล ${number(t.upkeep)} ฿ / เทอม</p><p>วางทับกรอบเส้นประชนิดเดียวกัน เพื่อรับโบนัสตรงผังจริง</p>`;
+  } else if (selectedVehicle) {
+    const v=[...life.agents.filter(a=>a.car&&a.mode==='walking'),...life.parked,...life.traffic].find(x=>x.id===selectedVehicle);
+    if(v)$('info').innerHTML=`<span class="eyebrow">ยานพาหนะ • ${v.vehicle?.type||v.type||'รถยนต์'}</span><h2>${v.staff?v.name:'รถผู้มาติดต่อ'}</h2><p>${v.mode==='walking'||v.moving?'กำลังเดินทาง':'จอดอยู่'}</p>`;
+    else $('info').innerHTML='<h2>สำรวจมหาวิทยาลัย</h2>';
   } else {
     $('info').innerHTML = '<h2>สำรวจมหาวิทยาลัย</h2><p>คลิกนักศึกษาเพื่อดูชีวิตของเขา<br>คลิกอาคารเพื่อดูรายละเอียดและอัปเกรด<br>กรอบเส้นประคือตำแหน่งอาคารจริง • จุดจางคือแนวถนนเดิม</p>';
   }
@@ -346,9 +350,11 @@ canvas.addEventListener('pointerup', e => {
     else { state = place(state, tool, p.x, p.y); notify(`สร้าง${TYPES[tool].name}แล้ว`); if (tool === 'admin') tool = 'road'; selected = null; }
   } else {
     const agent = view.pickAgent(life, px, py);
-    if (agent) { selectedAgent = agent.id; selected = null; }
-    else if (building) { selected = building.id; selectedAgent = null; }
-    else { selected = null; selectedAgent = null; }
+    const vehicle = !agent && view.pickVehicle(life,px,py);
+    if (agent) { selectedAgent = agent.id; selectedVehicle = null; selected = null; }
+    else if(vehicle){selectedVehicle=vehicle.id;selectedAgent=null;selected=null;}
+    else if (building) { selected = building.id; selectedAgent = null; selectedVehicle=null; }
+    else { selected = null; selectedAgent = null; selectedVehicle=null; }
   }
   update();
 });

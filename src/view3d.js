@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { TYPES, utilities, CROPS, FACILITIES, SHUTTLE , powerWires, buildingName } from './sim.js';
-import { agentPosition } from './life.js';
+import { agentPosition, vehiclePosition } from './life.js';
 
 const TILE_PX = 12; // terrain texture pixels per tile
 const COL = { O: '#3c5a45', G: '#8fb070', H: '#8fb070', R: '#8fb070', r: '#8fb070', W: '#5fa3bf' };
@@ -489,6 +490,7 @@ export function createView(canvas, MAP) {
   }
 
   function sync(state) {
+    lastState = state;
     syncRoads(state);
     syncUtilityObjects(state);
     if(shuttleRoadRef!==state.roads||facilityRef!==state.facilities||shuttleCount!==state.shuttles){
@@ -572,11 +574,110 @@ export function createView(canvas, MAP) {
   const hair=new THREE.InstancedMesh(hairGeo,new THREE.MeshLambertMaterial({color:'#30271f'}),MAXP);
   const arms=new THREE.InstancedMesh(limbGeo,new THREE.MeshLambertMaterial({color:'#d9a77f'}),MAXP*2);
   const legs=new THREE.InstancedMesh(limbGeo,new THREE.MeshLambertMaterial({color:'#30353c'}),MAXP*2);
-  const bikes=new THREE.InstancedMesh(new THREE.BoxGeometry(.34,.12,.13),new THREE.MeshLambertMaterial({color:'#258b70'}),MAXP);
-  const bikeWheels=new THREE.InstancedMesh(new THREE.TorusGeometry(.07,.025,5,8),new THREE.MeshLambertMaterial({color:'#22262a'}),MAXP*2);
+  // ---------- vehicles: parts are defined in a local frame (front = +Z) and placed with the vehicle's heading ----------
+  const VMAX = 360, BMAX = MAXP;
+  const lam = (c, extra = {}) => new THREE.MeshLambertMaterial({ color: c, ...extra });
+  const part = (geo, material, count) => { const m = new THREE.InstancedMesh(geo, material, count); m.castShadow = true; m.frustumCulled = false; m.count = 0; scene.add(m); return m; };
+  const cyl = (r, w) => { const g = new THREE.CylinderGeometry(r, r, w, 10); g.rotateZ(Math.PI / 2); return g; }; // axle along X
+  const headMat = lam('#fff6d0', { emissive: '#fff1b0', emissiveIntensity: 0 });
+  const tailMat = lam('#b3261e', { emissive: '#ff2a1a', emissiveIntensity: 0.15 });
+  const V = {
+    body: part(new THREE.BoxGeometry(1, 1, 1), lam('#ffffff'), VMAX),       // coloured per instance
+    cabin: part(new THREE.BoxGeometry(1, 1, 1), lam('#ffffff'), VMAX),      // coloured per instance (roof)
+    glass: part(new THREE.BoxGeometry(1, 1, 1), lam('#2b3a44'), VMAX),
+    wheel: part(cyl(0.062, 0.05), lam('#1d1f22'), VMAX * 4),
+    hub: part(cyl(0.032, 0.054), lam('#b9bec2'), VMAX * 4),
+    bumper: part(new THREE.BoxGeometry(1, 1, 1), lam('#c9cdcf'), VMAX * 2),
+    head: part(new THREE.BoxGeometry(0.07, 0.035, 0.012), headMat, VMAX * 2),
+    tail: part(new THREE.BoxGeometry(0.07, 0.035, 0.012), tailMat, VMAX * 2),
+    beam: part(new THREE.PlaneGeometry(0.5, 0.7), new THREE.MeshBasicMaterial({ color: '#fff3c4', transparent: true, opacity: 0, depthWrite: false }), VMAX),
+  };
+  V.beam.castShadow = false;
+  // dimensions per type: L length, W width, H body height, C cabin (len, height, z-offset), bed for pickups
+  const VTYPES = {
+    sedan:  { L: 0.74, W: 0.34, H: 0.13, C: [0.40, 0.12, -0.04] },
+    pickup: { L: 0.82, W: 0.36, H: 0.15, C: [0.30, 0.14, 0.12], bed: true },
+    van:    { L: 0.80, W: 0.36, H: 0.16, C: [0.66, 0.17, -0.03] },
+  };
+  const bike = {
+    frame: part(new THREE.BoxGeometry(0.11, 0.09, 0.30), lam('#ffffff'), BMAX),           // coloured fairing
+    seat: part(new THREE.BoxGeometry(0.09, 0.03, 0.14), lam('#1f2227'), BMAX),
+    bar: part(new THREE.BoxGeometry(0.18, 0.02, 0.02), lam('#2a2d31'), BMAX),
+    stem: part(new THREE.BoxGeometry(0.025, 0.14, 0.025), lam('#2a2d31'), BMAX),
+    wheel: part(cyl(0.055, 0.035), lam('#1d1f22'), BMAX * 2),
+    head: part(new THREE.BoxGeometry(0.05, 0.035, 0.012), headMat, BMAX),
+    rider: part(new THREE.BoxGeometry(0.11, 0.17, 0.08), lam('#f2f0e6'), BMAX),            // white shirt torso
+    riderHead: part(new THREE.SphereGeometry(0.05, 8, 6), lam('#d9a77f'), BMAX),
+    helmet: part(new THREE.SphereGeometry(0.058, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.6), lam('#ffffff'), BMAX),
+    thigh: part(new THREE.BoxGeometry(0.04, 0.04, 0.12), lam('#262a35'), BMAX * 2),
+    shin: part(new THREE.BoxGeometry(0.04, 0.11, 0.04), lam('#262a35'), BMAX * 2),
+    arm: part(new THREE.BoxGeometry(0.03, 0.03, 0.13), lam('#f2f0e6'), BMAX * 2),
+  };
+  // ---------- real 3D cars (Quaternius Realistic Car Pack, CC0, FBX) ----------
+  // Loaded async; until then (or on failure) the procedural cars above are drawn.
+  let lastState = null;
+  const CAR_MODELS = { car1: ['NormalCar1', 0.74], car2: ['NormalCar2', 0.70], suv: ['SUV', 0.82], cop: ['Cop', 0.76] };
+  const carTemplates = new Map(), carPools = new Map(), bodyMatCache = new Map(), lightMats = { head: [], tail: [], siren: [] };
+  const NOT_BODY = /window|black|grey|gray|light/i;
+  (async () => {
+    const loader = new FBXLoader();
+    for (const [key, [file, length]] of Object.entries(CAR_MODELS)) {
+      try {
+        const fbx = await loader.loadAsync(`assets/vehicles/${file}.fbx`);
+        fbx.rotation.x = -Math.PI / 2; // file is Z-up, length along Y
+        const holder = new THREE.Group(); holder.add(fbx); holder.updateMatrixWorld(true);
+        let box = new THREE.Box3().setFromObject(holder);
+        const size = box.getSize(new THREE.Vector3()), k = length / Math.max(size.x, size.z);
+        fbx.scale.setScalar(k); holder.updateMatrixWorld(true);
+        box = new THREE.Box3().setFromObject(holder);
+        fbx.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
+        holder.updateMatrixWorld(true);
+        // face +Z: the headlights must be at the front
+        const head = new THREE.Box3(); let found = false, bodyMat = null, bodyTris = 0;
+        holder.traverse(o => {
+          if (!o.isMesh) return;
+          o.castShadow = true; o.receiveShadow = true;
+          const mats = [].concat(o.material), groups = o.geometry.groups.length ? o.geometry.groups : [{ materialIndex: 0, count: (o.geometry.index?.count ?? o.geometry.attributes.position.count) }];
+          for (const g of groups) { const m = mats[g.materialIndex]; if (m && !NOT_BODY.test(m.name) && g.count > bodyTris && key !== 'cop') { bodyTris = g.count; bodyMat = m; } }
+          for (const m of mats) {
+            if (/headlight/i.test(m.name)) { lightMats.head.push(m); head.union(new THREE.Box3().setFromObject(o)); found = true; }
+            if (/taillight/i.test(m.name)) lightMats.tail.push(m);
+            if (/bluelight|whitelight/i.test(m.name)) lightMats.siren.push(m);
+          }
+        });
+        const outer = new THREE.Group(); outer.add(holder);
+        if (found && (head.min.z + head.max.z) / 2 < 0) holder.rotation.y = Math.PI;
+        carTemplates.set(key, { root: outer, bodyMat });
+      } catch (err) { console.warn('car model failed', file, err); }
+    }
+  })();
+  function carClone(key, colour) {
+    const tpl = carTemplates.get(key); if (!tpl) return null;
+    const pool = carPools.get(key) || []; carPools.set(key, pool);
+    let rec = pool.find(r => !r.used);
+    if (!rec) { rec = { obj: tpl.root.clone(true), used: false, colour: null }; scene.add(rec.obj); pool.push(rec); }
+    rec.used = true; rec.obj.visible = true;
+    if (tpl.bodyMat && rec.colour !== colour) {
+      const ck = `${key}|${colour}`;
+      let m = bodyMatCache.get(ck); if (!m) { m = tpl.bodyMat.clone(); m.color.set(colour); bodyMatCache.set(ck, m); }
+      rec.obj.traverse(o => { if (!o.isMesh) return; const orig = [].concat(o.userData.origMats || o.material); o.userData.origMats = orig; const next = orig.map(x => (x === tpl.bodyMat ? m : x)); o.material = Array.isArray(o.material) ? next : next[0]; });
+      rec.colour = colour;
+    }
+    return rec;
+  }
+  const BIKE_COLOURS = ['#d23b3b', '#2f6fb3', '#1f1f22', '#e8e8e8', '#e0a12a', '#3a8f5c', '#8a52b3'];
+  const HELMETS = ['#ffffff', '#1f1f22', '#d23b3b', '#2f6fb3', '#e0a12a'];
+  const vm = new THREE.Matrix4(), lm = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), one = new THREE.Vector3(1, 1, 1), sv = new THREE.Vector3(), pv = new THREE.Vector3();
+  // base matrix for a vehicle at (x, y, z) heading h (forward = (sin h, cos h)), optional roll/pitch
+  const baseMatrix = (x, y, z, h, roll = 0, pitch = 0) => { e.set(pitch, h, roll, 'YXZ'); q.setFromEuler(e); return vm.compose(pv.set(x, y, z), q, one); };
+  // set instance `i` of mesh to base * local(translate t, scale s, rotation rx)
+  function putPart(mesh, i, base, tx, ty, tz, sx = 1, sy = 1, sz = 1, rx = 0) {
+    e.set(rx, 0, 0); q.setFromEuler(e); lm.compose(pv.set(tx, ty, tz), q, sv.set(sx, sy, sz));
+    lm.premultiply(base); mesh.setMatrixAt(i, lm);
+  }
   bodies.castShadow = true; bodies.count = heads.count = hair.count = arms.count = legs.count = 0;
   bodies.frustumCulled = heads.frustumCulled = hair.frustumCulled = arms.frustumCulled = legs.frustumCulled = false;
-  scene.add(bodies, heads, hair, arms, legs,bikes,bikeWheels);
+  scene.add(bodies, heads, hair, arms, legs);
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.24, 16), new THREE.MeshBasicMaterial({ color: '#fff27a', side: THREE.DoubleSide }));
   ring.rotation.x = -Math.PI / 2; ring.visible = false; scene.add(ring);
   let shown = [];
@@ -657,7 +758,7 @@ export function createView(canvas, MAP) {
     if (rec.active !== next) { if (rec.active) next.reset().crossFadeFrom(rec.active, 0.2, true); next.play(); rec.active = next; }
   }
   function drawPeople(life, selectedId, time) {
-    shown = life.agents.filter(a => a.mode !== 'inside'&&!a.shuttle&&!a.ride).slice(0, MAXP);
+    shown = life.agents.filter(a => a.mode !== 'inside'&&!a.shuttle&&!a.ride&&!a.car).slice(0, MAXP);
     const limit = viewSize > 60 ? 0 : Math.max(0, Math.min(40, Math.round(40 * Math.max(0, (60 - viewSize) / 30))));
     const detail = [...shown].sort((a,b) => { const pa=agentPosition(life,a),pb=agentPosition(life,b); return Math.hypot(pa.x-target.x,pa.y-target.z)-Math.hypot(pb.x-target.x,pb.y-target.z); }).slice(0,limit);
     const detailed = new Set(detail), assigned = new Set(), usedByModel = new Map();
@@ -699,8 +800,74 @@ export function createView(canvas, MAP) {
     bodies.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = hair.instanceMatrix.needsUpdate=arms.instanceMatrix.needsUpdate=legs.instanceMatrix.needsUpdate=true;
     if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
     const riders=life.agents.filter(a=>a.mode!=='inside'&&!a.shuttle&&a.ride).slice(0,MAXP);
-    riders.forEach((a,i)=>{const p=agentPosition(life,a);tmp.position.set(p.x,(.18)*PS,p.y);tmp.rotation.set(0,Math.atan2(a.x-p.x,a.y-p.y),0);tmp.scale.setScalar(1.8*PS);tmp.updateMatrix();bikes.setMatrixAt(i,tmp.matrix);for(let w=0;w<2;w++){tmp.position.set(p.x+((w?-.2:.2))*PS,(.11)*PS,p.y);tmp.rotation.set(Math.PI/2,0,0);tmp.scale.setScalar(1.8*PS);tmp.updateMatrix();bikeWheels.setMatrixAt(i*2+w,tmp.matrix)}});bikes.count=riders.length;bikeWheels.count=riders.length*2;bikes.instanceMatrix.needsUpdate=bikeWheels.instanceMatrix.needsUpdate=true;
+    riders.forEach((a, i) => {
+      const p = agentPosition(life, a), h = a.heading ?? Math.atan2(a.x - p.x, a.y - p.y), lean = Math.sin(time / 300 + a.id) * 0.04;
+      const base = baseMatrix(p.x, 0, p.y, h, lean).clone();
+      putPart(bike.frame, i, base, 0, 0.10, 0); bike.frame.setColorAt(i, color.set(BIKE_COLOURS[a.id % BIKE_COLOURS.length]));
+      putPart(bike.seat, i, base, 0, 0.16, -0.05);
+      putPart(bike.stem, i, base, 0, 0.16, 0.13, 1, 1, 1, -0.35);
+      putPart(bike.bar, i, base, 0, 0.23, 0.15);
+      putPart(bike.head, i, base, 0, 0.17, 0.175);
+      putPart(bike.wheel, i * 2, base, 0, 0.055, 0.15); putPart(bike.wheel, i * 2 + 1, base, 0, 0.055, -0.15);
+      putPart(bike.rider, i, base, 0, 0.255, -0.04, 1, 1, 1, 0.25); bike.rider.setColorAt(i, color.set(a.staff ? '#547a63' : '#f2f0e6'));
+      putPart(bike.riderHead, i, base, 0, 0.375, 0.0); putPart(bike.helmet, i, base, 0, 0.385, 0.0); bike.helmet.setColorAt(i, color.set(HELMETS[(a.id * 7) % HELMETS.length]));
+      for (const side of [0, 1]) {
+        const sx = side ? -0.05 : 0.05;
+        putPart(bike.thigh, i * 2 + side, base, sx, 0.17, 0.0);
+        putPart(bike.shin, i * 2 + side, base, sx, 0.115, 0.06);
+        putPart(bike.arm, i * 2 + side, base, sx * 1.4, 0.29, 0.07, 1, 1, 1, 0.5);
+      }
+    });
+    for (const m of Object.values(bike)) { m.count = riders.length * (m === bike.wheel || m === bike.thigh || m === bike.shin || m === bike.arm ? 2 : 1); m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
     const sel = life.agents.find(a => a.id === selectedId);
+    const cars=[...life.parked,...life.agents.filter(a=>a.car&&a.mode==='walking'),...life.traffic].slice(0,VMAX);
+    const night = life.hour >= 18 || life.hour < 6.3;
+    headMat.emissiveIntensity = night ? 1.6 : 0; tailMat.emissiveIntensity = night ? 1 : 0.15; V.beam.material.opacity = night ? 0.18 : 0;
+    for (const pool of carPools.values()) for (const r of pool) { r.used = false; }
+    const realCars = carTemplates.size === Object.keys(CAR_MODELS).length;
+    for (const m of [...lightMats.head]) { m.emissive?.set('#ffe9a8'); m.emissiveIntensity = night ? 1.4 : 0; }
+    for (const m of [...lightMats.tail]) { m.emissive?.set('#ff2a1a'); m.emissiveIntensity = night ? 0.9 : 0.1; }
+    for (const m of [...lightMats.siren]) { m.emissive?.set(m.color); m.emissiveIntensity = (Math.floor(time / 350) % 2) ? 1.2 : 0.1; }
+    const hasGuards = (lastState?.facilities || []).some(f => f.kind === 'guard');
+    const procedural = [];
+    cars.forEach(v => {
+      const p = vehiclePosition(life, v);
+      if (!realCars) { procedural.push(v); return; }
+      const key = hasGuards && !v.staff && v.id % 6 === 0 ? 'cop' : p.type === 'sedan' ? (v.id % 2 ? 'car1' : 'car2') : 'suv';
+      const rec = carClone(key, p.colour);
+      if (!rec) { procedural.push(v); return; }
+      rec.obj.position.set(p.x, p.moving ? Math.sin(time / 90 + v.id) * 0.004 : 0, p.y);
+      rec.obj.rotation.set(0, p.heading, 0);
+    });
+    for (const pool of carPools.values()) for (const r of pool) if (!r.used) r.obj.visible = false;
+    cars.length = 0; cars.push(...procedural);
+    cars.forEach((v, i) => {
+      const p = vehiclePosition(life, v), T = VTYPES[p.type] || VTYPES.sedan, h = p.heading;
+      const bob = p.moving ? Math.sin(time / 90 + i) * 0.006 : 0;
+      const base = baseMatrix(p.x, bob, p.y, h).clone();
+      const y0 = 0.06, top = y0 + T.H;
+      putPart(V.body, i, base, 0, y0 + T.H / 2, 0, T.W, T.H, T.L); V.body.setColorAt(i, color.set(p.colour));
+      const [cl, ch, cz] = T.C;
+      putPart(V.glass, i, base, 0, top + ch / 2, cz, T.W * 0.92, ch, cl);
+      putPart(V.cabin, i, base, 0, top + ch + 0.012, cz, T.W * 0.94, 0.024, cl * 0.96); V.cabin.setColorAt(i, color.set(p.colour));
+      for (let w = 0; w < 4; w++) {
+        const sx = (w % 2 ? -1 : 1) * (T.W / 2), sz = (w < 2 ? 1 : -1) * (T.L / 2 - 0.13);
+        putPart(V.wheel, i * 4 + w, base, sx, 0.062, sz); putPart(V.hub, i * 4 + w, base, sx, 0.062, sz);
+      }
+      for (const end of [0, 1]) {
+        const z = (end ? -1 : 1) * (T.L / 2 + 0.012);
+        putPart(V.bumper, i * 2 + end, base, 0, y0 + 0.035, z, T.W * 1.02, 0.04, 0.035);
+      }
+      for (const side of [0, 1]) {
+        const x = (side ? -1 : 1) * (T.W / 2 - 0.06);
+        putPart(V.head, i * 2 + side, base, x, y0 + T.H * 0.7, T.L / 2 + 0.003);
+        putPart(V.tail, i * 2 + side, base, x, y0 + T.H * 0.7, -T.L / 2 - 0.003);
+      }
+      // headlight beam on the road at night (moving cars only)
+      if (night && p.moving) putPart(V.beam, i, base, 0, 0.02, T.L / 2 + 0.38, 1, 1, 1, -Math.PI / 2); else putPart(V.beam, i, base, 0, -5, 0, 0.001, 0.001, 0.001);
+    });
+    const nCars = cars.length;
+    for (const m of Object.values(V)) { m.count = nCars * (m === V.wheel || m === V.hub ? 4 : m === V.bumper || m === V.head || m === V.tail ? 2 : 1); m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
     ring.visible = !!sel && sel.mode !== 'inside';
     if (ring.visible) { const p = agentPosition(life, sel); ring.position.set(p.x, 0.04, p.y); }
   }
@@ -761,6 +928,7 @@ export function createView(canvas, MAP) {
     }
     return best;
   }
+  function pickVehicle(life,px,py){let best=null,d0=Math.max(14,height/viewSize*.55);const all=[...life.agents.filter(a=>a.car&&a.mode==='walking'),...life.parked,...life.traffic];for(const v of all){const p=vehiclePosition(life,v);proj.set(p.x,.2,p.y).project(camera);const d=Math.hypot((proj.x+1)*width/2-(px),(1-proj.y)*height/2-(py));if(d<d0){d0=d;best=v}}return best}
 
   // ---------- controls ----------
   function resize(w, h) { width = Math.max(1, w); height = Math.max(1, h); renderer.setSize(width, height, false); placeCamera(); }
@@ -802,7 +970,7 @@ export function createView(canvas, MAP) {
   }
 
   return {
-    sync, render, resize, panPixels, zoomBy, rotate, orbit, focus, fitAll, groundAt, pickBuilding, pickAgent, setPreview,
+    sync, render, resize, panPixels, zoomBy, rotate, orbit, focus, fitAll, groundAt, pickBuilding, pickAgent, pickVehicle, setPreview,
     setGhosts(v) { ghostGroup.visible = v; hints.visible = v; },
     setLabels(v) { showLabels = v; },
     setUtilityView(v) { utilView = !!v; utilOverlay.visible = utilView; wifiGroup.visible = utilView; facilityGroup.visible=true; facilityGroup.traverse(o=>{if(o.geometry?.type==='RingGeometry')o.visible=utilView}); },

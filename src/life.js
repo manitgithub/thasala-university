@@ -43,8 +43,10 @@ function mulberry(seed) {
 }
 
 export function createLife(seed = 7) {
-  return { day: 1, hour: 7, agents: [], nextId: 1, rand: mulberry(seed), graph: null, moodSum: 0, moodN: 0, scale: 1, occupancy: new Map() };
+  return { day: 1, hour: 7, agents: [], traffic: [], parked: [], nextId: 1, nextTrafficId: 1, rand: mulberry(seed), graph: null, moodSum: 0, moodN: 0, scale: 1, occupancy: new Map() };
 }
+const VEHICLE_COLOURS = ['#f2f0e8','#aeb5ba','#25282b','#b53d35','#315b86','#737a7d'];
+function vehicleStyle(id) { return { type: ['sedan','pickup','van'][id % 3], colour: VEHICLE_COLOURS[(id * 7 + 3) % VEHICLE_COLOURS.length] }; }
 
 // ---------- road graph ----------
 function buildGraph(state) {
@@ -65,7 +67,9 @@ function buildGraph(state) {
     }
     if (best >= 0) doors.set(b.id, best);
   }
-  return { w, h, road, doors, fields: new Map(), roads: state.roads, buildings: state.buildings, map: state.map };
+  const wide = new Set();
+  for (const r of state.map.mainRoads || []) if (r.width === 2) for (const i of r.pts || []) wide.add(i);
+  return { w, h, road, wide, doors, fields: new Map(), roads: state.roads, buildings: state.buildings, map: state.map };
 }
 function field(g, id) {
   let f = g.fields.get(id);
@@ -189,11 +193,13 @@ export function updateLife(L, state, dtHours) {
       a.activity = activity;
       const dest = pickBuilding(L, state, activity, a, u) || (() => { const home = state.buildings.find(b => b.id === a.home); return home && u.supplied.get(home.id)?.water && u.supplied.get(home.id)?.power ? home : null; })();
       if (dest && dest.id !== a.inside) {
+        if (a.parked) { L.parked = L.parked.filter(p => p !== a.parked); a.parked = null; }
         if (a.inside !== null) L.occupancy.set(a.inside, (L.occupancy.get(a.inside) || 1) - 1);
         a.inside = null; a.mode = 'walking'; a.target = dest.id; a.waited = 0;
         const distance=Math.hypot(dest.x+dest.w/2-a.x,dest.y+dest.h/2-a.y);
         const shuttleStops=(state.facilities||[]).filter(o=>o.kind==='stop').filter(o=>Math.hypot(o.i%state.map.w+.5-a.x,Math.floor(o.i/state.map.w)+.5-a.y)<6&&Math.hypot(o.i%state.map.w+.5-(dest.x+dest.w/2),Math.floor(o.i/state.map.w)+.5-(dest.y+dest.h/2))<6);
         a.shuttle=!!(state.shuttles&&shuttleStops.length&&a.id%4===0);a.ride=!a.shuttle&&!a.staff&&distance>15&&a.id%5<2;
+        if (a.staff) { a.car = true; a.vehicle ||= vehicleStyle(a.id); }
         if(a.shuttle)a.thought='รถไฟฟ้าสบายจัง';
         const want = PLACES[activity]?.[0];
         if (want && want !== 'dorm' && dest.type !== want) a.thought = thoughtFor(a, state.buildings.some(b => b.type === want && !u.supplied.get(b.id)?.power) ? 'ไฟดับ/น้ำไม่ไหล เลยกลับหอ' : `ไม่มี${TYPES[want]?.name || 'ที่'}ให้ไป เลยกลับหอ`);
@@ -203,20 +209,23 @@ export function updateLife(L, state, dtHours) {
     if (a.mode === 'walking') {
       if(a.ride&&state.roadCondition<60&&a.id%9===L.day%9)a.thought='ถนนเป็นหลุม ขับยากมาก';
       const f = field(G, a.target);
-      let budget = WALK_SPEED * dtHours * (a.shuttle?3.2:a.ride?2.5:1);
+      let budget = WALK_SPEED * dtHours * (a.car?3:a.shuttle?3.2:a.ride?2.5:1);
       while (budget > 0) {
         const tx = (a.at % G.w) + 0.5, ty = Math.floor(a.at / G.w) + 0.5;
         const d = Math.hypot(tx - a.x, ty - a.y);
         if (d > budget) { a.x += (tx - a.x) / d * budget; a.y += (ty - a.y) / d * budget; budget = 0; break; }
         a.x = tx; a.y = ty; budget -= d;
         if (f[a.at] <= 0) { // arrived at the door (or no route)
-          a.mode = 'queue'; break;
+          a.mode = a.car ? 'inside' : 'queue';
+          if (a.car) { a.inside = a.target; a.target = null; const spot = { x: a.x, y: a.y, heading: a.heading || 0, colour: a.vehicle.colour, type: a.vehicle.type, driverId: a.id }; L.parked.push(spot); a.parked = spot; }
+          break;
         }
         const x = a.at % G.w, y = (a.at - x) / G.w;
         let next = -1;
         for (const [dx, dy] of N4) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= G.w || ny >= G.h) continue; const j = ny * G.w + nx; if (f[j] >= 0 && f[j] < f[a.at]) { next = j; break; } }
         if (next < 0) { a.mode = 'queue'; break; }
         a.at = next;
+        a.heading = Math.atan2((next % G.w) - x, Math.floor(next / G.w) - y);
       }
     }
 
@@ -258,6 +267,20 @@ export function updateLife(L, state, dtHours) {
     }
     if (!a.staff) { L.moodSum += mood(a) * dtHours; L.moodN += dtHours; }
   }
+  // Deterministic visitor fleet follows the same cached door fields as agents.
+  const trafficCount = Math.min(25, 2 + Math.floor(state.students / 250) + Math.floor(state.buildings.length / 3));
+  while (L.traffic.length < trafficCount) { const id = L.nextTrafficId++; L.traffic.push({ id, ...vehicleStyle(id + 91), at: -1, x: 0, y: 0, target: null, wait: 0, heading: 0, moving: false }); }
+  L.traffic.length = trafficCount;
+  const night = L.hour >= 22 || L.hour < 6;
+  for (const v of L.traffic) {
+    v.moving = false;
+    if (v.wait > 0) { v.wait = Math.max(0, v.wait - dtHours); continue; }
+    if (night && v.id % 5 !== L.day % 5) continue;
+    if (v.target == null) { const choices = [...G.doors.keys()]; if (!choices.length) continue; v.target = choices[Math.floor(L.rand() * choices.length)]; const door = G.doors.get(v.target); if (v.at < 0) { v.at = door; v.x = door % G.w + .5; v.y = Math.floor(door / G.w) + .5; } }
+    const f = field(G, v.target); let budget = WALK_SPEED * 3 * dtHours;
+    while (budget > 0 && f[v.at] > 0) { const x=v.at%G.w,y=Math.floor(v.at/G.w); let next=-1; for(const [dx,dy] of N4){const nx=x+dx,ny=y+dy;if(nx>=0&&ny>=0&&nx<G.w&&ny<G.h){const j=ny*G.w+nx;if(f[j]>=0&&f[j]<f[v.at]){next=j;break;}}} if(next<0)break; const nx=next%G.w+.5,ny=Math.floor(next/G.w)+.5,dx=nx-v.x,dy=ny-v.y,d=Math.hypot(dx,dy); v.heading=Math.atan2(dx,dy); v.moving=true; if(d>budget){v.x+=dx/d*budget;v.y+=dy/d*budget;break;} v.x=nx;v.y=ny;budget-=d;v.at=next; }
+    if (f[v.at] === 0) { v.target = null; v.wait = (2 + L.rand() * 6) / 60; }
+  }
 }
 
 // Average student mood since the last call (0–100), or undefined when nobody lives here yet.
@@ -276,3 +299,4 @@ export function agentPosition(L, a) {
   if(a.ride&&a.target!==null){const dest=L.graph?.doors.get(a.target);if(dest!==undefined){const dx=(dest%L.graph.w)+.5-a.x,dy=Math.floor(dest/L.graph.w)+.5-a.y,d=Math.hypot(dx,dy)||1;return{x:a.x-dy/d*.13,y:a.y+dx/d*.13};}}
   return { x: a.x, y: a.y };
 }
+export function vehiclePosition(L, v) { const heading=v.heading||0, i=Math.floor(v.y)*L.graph?.w+Math.floor(v.x), offset=L.graph?.wide.has(i)?.45:.22; return { x:v.x-Math.cos(heading)*offset, y:v.y+Math.sin(heading)*offset, heading, colour:v.colour||v.vehicle?.colour||'#aeb5ba', type:v.type||v.vehicle?.type||'sedan', moving:v.moving ?? v.mode==='walking', parked:v.parked===true || (!v.moving && v.mode==='inside'), driver:v.staff ? v.name : 'รถผู้มาติดต่อ', agentId:v.id } }
