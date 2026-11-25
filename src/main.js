@@ -94,13 +94,13 @@ function renderManage() {
     for (const b of body.querySelectorAll('[data-open]')) b.onclick = () => act(openSchool(state, b.dataset.open), 'ยังเปิดไม่ได้', 'เปิดสำนักวิชาแล้ว');
   } else {
     const r = researchStatus(state);
-    const active = r.active.map(p => `<div class="card"><h3>${esc(p.title)}</h3><p>${esc(p.sponsor)} • อาจารย์ ${p.lecturers} คน • รับ ${compact(p.payment)} ฿ เมื่อเสร็จ</p><progress max="${p.terms}" value="${p.progress}"></progress></div>`).join('');
+    const active = r.active.map(p => `<div class="card"><h3>${esc(p.title)}</h3><p>${esc(p.sponsor)} • อาจารย์ ${p.lecturers} คน • 💰 ส่งมอบแล้วรับ +${compact(p.payment)} ฿</p><progress max="${p.terms}" value="${p.progress}"></progress></div>`).join('');
     const offers = r.offers.map(o => `<div class="card"><h3>${esc(o.title)}</h3><p>${esc(o.sponsor)}${o.school ? ` • ${esc(SCHOOLS.find(x => x.id === o.school)?.name || '')}` : ''} • อาจารย์ ${o.lecturers} คน • ${o.terms} เทอม</p>
-      <p>งวดแรก ${compact(o.upfront)} ฿ • เมื่อเสร็จ ${compact(o.payment)} ฿ • ชื่อเสียง +${o.reputation}</p>
-      <div class="btns"><button data-accept="${esc(o.id)}" ${o.error ? 'disabled' : ''}>รับงาน</button>${o.error ? `<small>${esc(o.error)}</small>` : ''}</div></div>`).join('');
+      <p class="income">💰 รับทุนทันที +${compact(o.upfront)} ฿ • ส่งมอบแล้วรับอีก +${compact(o.payment)} ฿ • ชื่อเสียง +${o.reputation}</p>
+      <div class="btns"><button data-accept="${esc(o.id)}" ${o.error ? 'disabled' : ''}>รับทุนวิจัย +${compact(o.upfront)} ฿</button>${o.error ? `<small>${esc(o.error)}</small>` : ''}</div></div>`).join('');
     body.innerHTML = `<div class="kv"><span>กำลังทำ</span><b>${r.active.length} / ${r.max} งาน</b><span>สำเร็จแล้ว</span><b>${r.done} งาน</b></div>
       ${active ? `<strong>กำลังดำเนินการ</strong>${active}` : ''}<strong>ข้อเสนอเทอมนี้</strong>${offers || '<small>ไม่มีข้อเสนอ</small>'}<small>ข้อเสนอเปลี่ยนทุกเทอม</small>`;
-    for (const b of body.querySelectorAll('[data-accept]')) b.onclick = () => act(acceptResearch(state, b.dataset.accept), 'รับงานนี้ไม่ได้', 'รับงานวิจัยแล้ว');
+    for (const b of body.querySelectorAll('[data-accept]')) b.onclick = () => act(acceptResearch(state, b.dataset.accept), 'รับทุนนี้ไม่ได้', 'ได้รับทุนวิจัยแล้ว • เงินงวดแรกเข้าบัญชีมหาวิทยาลัย');
   }
 }
 

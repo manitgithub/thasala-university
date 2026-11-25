@@ -827,7 +827,6 @@ export function researchError(state, offer) {
   if (offer.school && !state.schools.includes(offer.school)) return `ต้องเปิดสำนักวิชา${SCHOOLS.find(x => x.id === offer.school)?.name || ''}`;
   if (state.buildings.filter(b => b.type === 'academic').length < offer.academic) return `ต้องมีอาคารวิชาการ ${offer.academic} หลัง`;
   if (state.lecturers - assignedLecturers(state) < offer.lecturers) return `ต้องมีอาจารย์ว่าง ${offer.lecturers} คน`;
-  if (state.money < offer.upfront) return 'งบประมาณไม่เพียงพอ';
   return '';
 }
 export function researchStatus(state) {
@@ -842,7 +841,7 @@ export function acceptResearch(state, offerId) {
   // upfront is the sponsor's first instalment: we receive it
   return progress({
     ...state, money: state.money + offer.upfront, researchOffers: state.researchOffers.filter(o => o.id !== offerId),
-    researchActive: [...state.researchActive, { ...offer, progress: 0 }], log: logged(state, `รับงานวิจัย “${offer.title}” • ได้เงินงวดแรก ${offer.upfront.toLocaleString('th-TH')} ฿`),
+    researchActive: [...state.researchActive, { ...offer, progress: 0 }], log: logged(state, `ได้รับทุนวิจัย “${offer.title}” จาก${offer.sponsor} • รับเงินงวดแรก +${offer.upfront.toLocaleString('th-TH')} ฿`),
   });
 }
 

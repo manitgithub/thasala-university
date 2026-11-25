@@ -143,6 +143,7 @@ test('research contracts pay on completion and free lecturers', () => {
   const a = acceptResearch(s, 'x');
   assert.equal(a.researchActive.length, 1);
   assert.equal(a.money - s.money, 50000);
+  assert.equal(S.researchError({ ...s, money: 0 }, s.researchOffers[0]), '', 'research is income: accepting needs no money');
   assert.equal(S.assignedLecturers(a), 2);
   const t1 = tick(a), t2 = tick(t1);
   assert.equal(t1.researchActive.length, 1);
