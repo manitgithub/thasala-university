@@ -1,5 +1,7 @@
 // Low-poly isometric 3D view (Three.js). One tile = 1 world unit; tile (x, y) sits at world (x+.5, 0, y+.5).
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { TYPES, utilities, CROPS, FACILITIES, SHUTTLE , powerWires, buildingName } from './sim.js';
 import { agentPosition } from './life.js';
 
@@ -577,9 +579,90 @@ export function createView(canvas, MAP) {
   ring.rotation.x = -Math.PI / 2; ring.visible = false; scene.add(ring);
   let shown = [];
   const color = new THREE.Color();
+  const characterModels = [
+    { key: 'women/Casual', url: 'assets/characters/women/Casual.gltf' },
+    { key: 'women/Formal', url: 'assets/characters/women/Formal.gltf' },
+    { key: 'women/Suit', url: 'assets/characters/women/Suit.gltf' },
+    { key: 'men/Casual_2', url: 'assets/characters/men/Casual_2.gltf' },
+    { key: 'men/Casual_Hoodie', url: 'assets/characters/men/Casual_Hoodie.gltf' },
+    { key: 'men/Suit', url: 'assets/characters/men/Suit.gltf' },
+  ];
+  const characterData = new Map(), characterPools = new Map(), lastAgentPose = new Map();
+  const materialCache = new Map();
+  let lastCharacterFrame = null;
+  const loader = new GLTFLoader();
+  for (const def of characterModels) loader.load(def.url, gltf => {
+    const box = new THREE.Box3().setFromObject(gltf.scene), size = new THREE.Vector3(); box.getSize(size);
+    characterData.set(def.key, { scene: gltf.scene, clips: gltf.animations, scale: 0.9 / Math.max(size.y, 0.001), minY: box.min.y, centerX: (box.min.x + box.max.x) / 2, centerZ: (box.min.z + box.max.z) / 2 });
+    characterPools.set(def.key, []);
+  }, undefined, () => { /* low-poly instanced fallback remains active */ });
+  function modelFor(a) {
+    if (a.staff) return a.id % 2 ? 'women/Suit' : 'men/Suit';
+    // Stable variety based on the agent id; datasets without gender remain varied.
+    const women = (a.id % 2) === 0;
+    const choices = women ? ['women/Casual', 'women/Formal'] : ['men/Casual_2', 'men/Casual_Hoodie'];
+    return choices[Math.abs(a.id) % choices.length];
+  }
+  function makeCharacter(key, facultyColor) {
+    const data = characterData.get(key); if (!data) return null;
+    const root = cloneSkinned(data.scene); root.scale.setScalar(data.scale); root.position.set(-data.centerX * data.scale, -data.minY * data.scale, -data.centerZ * data.scale);
+    const cacheKey = `${key}|${facultyColor}`;
+    let replacements = materialCache.get(cacheKey);
+    if (!replacements) {
+      replacements = new Map();
+      root.traverse(o => {
+        if (!o.isMesh) return;
+        const orig = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of orig) {
+          if (!m || replacements.has(m)) continue;
+          const n = m.name || '';
+          const recolor = /^(Orange|Purple|Red_Dark|LightBlue|Blue|Green|Suit|Tie)$/i.test(n);
+          if (recolor) { const copy = m.clone(); copy.color.set(facultyColor || '#547a63'); replacements.set(m, copy); }
+          else replacements.set(m, m);
+        }
+      });
+      materialCache.set(cacheKey, replacements);
+    }
+    root.traverse(o => { if (!o.isMesh) return; o.castShadow = true; o.frustumCulled = false; const remap = m => replacements.get(m) || m; o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material); });
+    const visual = new THREE.Group(); visual.add(root);
+    const mixer = new THREE.AnimationMixer(root), actions = {};
+    for (const clip of data.clips) if (['Walk','Run','Idle','Wave','Interact'].includes(clip.name)) actions[clip.name] = mixer.clipAction(clip);
+    const rec = { root: visual, mixer, actions, active: null, key, visible: false };
+    scene.add(visual); return rec;
+  }
+  function useAction(rec, name, speed = 1) {
+    const next = rec.actions[name] || rec.actions.Idle;
+    if (!next) return;
+    next.timeScale = speed;
+    if (rec.active !== next) { if (rec.active) next.reset().crossFadeFrom(rec.active, 0.2, true); next.play(); rec.active = next; }
+  }
   function drawPeople(life, selectedId, time) {
     shown = life.agents.filter(a => a.mode !== 'inside'&&!a.shuttle&&!a.ride).slice(0, MAXP);
+    const limit = viewSize > 60 ? 0 : Math.max(0, Math.min(40, Math.round(40 * Math.max(0, (60 - viewSize) / 30))));
+    const detail = [...shown].sort((a,b) => { const pa=agentPosition(life,a),pb=agentPosition(life,b); return Math.hypot(pa.x-target.x,pa.y-target.z)-Math.hypot(pb.x-target.x,pb.y-target.z); }).slice(0,limit);
+    const detailed = new Set(detail), assigned = new Set(), usedByModel = new Map();
+    for (const pools of characterPools.values()) for (const rec of pools) rec.visible = false;
+    for (const a of detail) {
+      const key = modelFor(a), data = characterData.get(key); if (!data) continue;
+      const facultyColor = a.faculty?.color || '#547a63';
+      const poolKey = `${key}|${facultyColor}`;
+      if (!characterPools.has(poolKey)) characterPools.set(poolKey, []);
+      const pool = characterPools.get(poolKey), slot = usedByModel.get(poolKey) || 0;
+      let rec = pool[slot]; if (!rec) { rec = makeCharacter(key, facultyColor); if (!rec) continue; pool.push(rec); }
+      assigned.add(a);
+      usedByModel.set(poolKey, slot + 1); rec.visible = true; rec.root.visible = true;
+      const p = agentPosition(life,a), old = lastAgentPose.get(a.id); let heading = old?.heading || 0;
+      if (old) { const dx=p.x-old.x, dz=p.y-old.z; if (Math.hypot(dx,dz)>.002) heading=Math.atan2(dx,dz); }
+      lastAgentPose.set(a.id,{x:p.x,z:p.y,heading});
+      rec.root.position.set(p.x,0,p.y); rec.root.rotation.set(0,heading,0);
+      const walking = a.mode === 'walking';
+      useAction(rec, walking ? 'Walk' : 'Idle', walking ? Math.max(.45, Math.min(1.8, (a.speed || .8) / .8)) : 1);
+    }
+    const dt = lastCharacterFrame == null ? 1/60 : Math.min(0.05, Math.max(0, (time - lastCharacterFrame) / 1000));
+    lastCharacterFrame = time;
+    for (const pools of characterPools.values()) for (const rec of pools) { rec.root.visible = rec.visible; if (rec.visible) rec.mixer.update(dt); }
     shown.forEach((a, i) => {
+      if (assigned.has(a)) { tmp.position.set(0,-10000,0);tmp.scale.setScalar(0);tmp.updateMatrix(); bodies.setMatrixAt(i,tmp.matrix);heads.setMatrixAt(i,tmp.matrix);hair.setMatrixAt(i,tmp.matrix);arms.setMatrixAt(i*2,tmp.matrix);arms.setMatrixAt(i*2+1,tmp.matrix);legs.setMatrixAt(i*2,tmp.matrix);legs.setMatrixAt(i*2+1,tmp.matrix);return; }
       const p = agentPosition(life, a);
       const bob = a.mode === 'walking' ? Math.abs(Math.sin(time / 120 + a.id)) * 0.04 : 0;
       tmp.position.set(p.x, bob, p.y); tmp.rotation.set(0, 0, 0); tmp.scale.setScalar(1.9); tmp.updateMatrix();
