@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#183e34">
+<title>มหาวิทยาลัยแห่งท่าศาลา • สร้างอนาคต</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+</head>
+<body>
+<canvas id="map" tabindex="0" aria-label="แผนที่มหาวิทยาลัย ลากเพื่อเลื่อน คลิกเพื่อวางอาคาร"></canvas>
+
+<div class="hud">
+  <header class="hud-top">
+    <div class="panel brand"><span class="crest" aria-hidden="true">ท</span><div><h1>มหาวิทยาลัยแห่งท่าศาลา</h1><small id="autosave">บันทึกอัตโนมัติทุก 20 วินาที</small></div></div>
+    <section id="stats" class="panel stats" aria-label="สถานะมหาวิทยาลัย"></section>
+    <div class="panel timebox">
+      <div><strong id="date"></strong><small id="clock">วันที่ 1 • 07:00 น.</small></div>
+      <button id="next" class="primary">จบเทอม ▶</button>
+      <select id="speed" aria-label="เดินเทอมอัตโนมัติ"><option value="0">เทอม: หยุด</option><option value="1">เทอม 1× (30 วิ)</option><option value="2">เทอม 2× (15 วิ)</option></select>
+      <span class="life-speed" aria-label="ความเร็วชีวิตประจำวัน"><button data-life="0" title="หยุดชีวิต">⏸</button><button data-life="1" class="selected">1×</button><button data-life="3">3×</button></span>
+    </div>
+    <div class="panel menu"><button id="save">บันทึก</button><button id="load">โหลด</button><button id="newgame">เกมใหม่</button><button id="toggle-side" class="only-narrow" aria-expanded="false">แผง ☰</button></div>
+  </header>
+
+  <aside class="hud-left panel" id="build-panel">
+    <button class="panel-title" id="toggle-build" aria-expanded="true"><span>🏗️ ก่อสร้าง</span><span class="chev">▾</span></button>
+    <div class="collapsible">
+      <div id="palette" class="palette"></div>
+      <button id="bulldoze" class="bulldoze">🧹 รื้อถอน <small>อาคารคืนทุน 30% • ถนนที่สร้างเอง</small></button>
+    </div>
+  </aside>
+
+  <aside class="hud-right" id="side">
+    <section class="panel missions" id="missions" aria-live="polite"></section>
+    <section class="panel info" id="info" aria-live="polite"></section>
+    <section class="panel manage" id="manage">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="staff" class="selected">👩‍🏫 บุคลากร</button>
+        <button role="tab" data-tab="schools">🏛️ สำนักวิชา</button>
+        <button role="tab" data-tab="research">🔬 งานวิจัย</button>
+      </div>
+      <div id="manage-body"></div>
+    </section>
+    <details class="panel journal"><summary>📜 บันทึกมหาวิทยาลัย</summary><p class="finance" id="finance"></p><ol id="log"></ol></details>
+  </aside>
+
+  <div class="hud-bottom">
+    <div class="panel hintbar"><span id="hint"></span><small id="people"></small></div>
+    <div class="panel mapctl">
+      <label title="แสดงตำแหน่งอาคารจริงและแนวถนนเดิม"><input type="checkbox" id="ghosts" checked> ผังจริง</label><label title="แสดงป้ายชื่ออาคาร"><input type="checkbox" id="labels" checked> ป้ายชื่อ</label>
+      <label title="แสดงท่อ สายไฟ และพื้นที่ Wi-Fi"><input type="checkbox" id="utilities-view"> มุมมองสาธารณูปโภค</label>
+      <button id="rotl" title="หมุนกล้อง (Q) • หรือคลิกขวาค้างแล้วลาก" aria-label="หมุนกล้องซ้าย">⟲</button><button id="rotr" title="หมุนกล้อง (E) • หรือคลิกขวาค้างแล้วลาก" aria-label="หมุนกล้องขวา">⟳</button>
+      <button id="zoomout" aria-label="ซูมออก">−</button><button id="zoomin" aria-label="ซูมเข้า">+</button><button id="fit">ทั้งพื้นที่</button>
+    </div>
+  </div>
+  <div id="toast" role="status"></div>
+  <small class="credit">แผนที่ © OpenStreetMap contributors</small>
+</div>
+
+<dialog id="story" class="story"><span class="eyebrow" id="story-kicker"></span><h2 id="story-title"></h2><p id="story-text"></p><div id="story-extra"></div><p class="disclaimer" id="story-note"></p><button id="story-ok" class="primary">เริ่มเลย</button></dialog>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
