@@ -10,7 +10,7 @@ const TILE_PX = 12; // terrain texture pixels per tile
 const COL = { O: '#3c5a45', G: '#8fb070', H: '#8fb070', R: '#8fb070', r: '#8fb070', W: '#5fa3bf' };
 
 // Person size in world units (1 tile = 1 unit). Lower = smaller people next to buildings.
-const PERSON_H = 0.55, PS = PERSON_H / 0.9;
+const PERSON_H = 0.32, PS = PERSON_H / 0.9;
 export function createView(canvas, MAP) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
@@ -640,7 +640,13 @@ export function createView(canvas, MAP) {
           const mats = [].concat(o.material), groups = o.geometry.groups.length ? o.geometry.groups : [{ materialIndex: 0, count: (o.geometry.index?.count ?? o.geometry.attributes.position.count) }];
           for (const g of groups) { const m = mats[g.materialIndex]; if (m && !NOT_BODY.test(m.name) && g.count > bodyTris && key !== 'cop') { bodyTris = g.count; bodyMat = m; } }
           for (const m of mats) {
-            if (/headlight/i.test(m.name)) { lightMats.head.push(m); head.union(new THREE.Box3().setFromObject(o)); found = true; }
+            if (/headlight/i.test(m.name)) {
+              lightMats.head.push(m);
+              const mi = mats.indexOf(m), pos = o.geometry.attributes.position, idx = o.geometry.index, v = new THREE.Vector3();
+              for (const g of groups) if (g.materialIndex === mi) for (let k = g.start || 0; k < (g.start || 0) + g.count; k++) {
+                v.fromBufferAttribute(pos, idx ? idx.getX(k) : k).applyMatrix4(o.matrixWorld); head.expandByPoint(v); found = true;
+              }
+            }
             if (/taillight/i.test(m.name)) lightMats.tail.push(m);
             if (/bluelight|whitelight/i.test(m.name)) lightMats.siren.push(m);
           }
@@ -669,7 +675,7 @@ export function createView(canvas, MAP) {
   const HELMETS = ['#ffffff', '#1f1f22', '#d23b3b', '#2f6fb3', '#e0a12a'];
   const vm = new THREE.Matrix4(), lm = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), one = new THREE.Vector3(1, 1, 1), sv = new THREE.Vector3(), pv = new THREE.Vector3();
   // base matrix for a vehicle at (x, y, z) heading h (forward = (sin h, cos h)), optional roll/pitch
-  const baseMatrix = (x, y, z, h, roll = 0, pitch = 0) => { e.set(pitch, h, roll, 'YXZ'); q.setFromEuler(e); return vm.compose(pv.set(x, y, z), q, one); };
+  const baseMatrix = (x, y, z, h, roll = 0, pitch = 0, k = 1) => { e.set(pitch, h, roll, 'YXZ'); q.setFromEuler(e); return vm.compose(pv.set(x, y, z), q, sv.set(k, k, k)); };
   // set instance `i` of mesh to base * local(translate t, scale s, rotation rx)
   function putPart(mesh, i, base, tx, ty, tz, sx = 1, sy = 1, sz = 1, rx = 0) {
     e.set(rx, 0, 0); q.setFromEuler(e); lm.compose(pv.set(tx, ty, tz), q, sv.set(sx, sy, sz));
@@ -695,7 +701,8 @@ export function createView(canvas, MAP) {
   let lastCharacterFrame = null;
   const loader = new GLTFLoader();
   for (const def of characterModels) loader.load(def.url, gltf => {
-    const box = new THREE.Box3().setFromObject(gltf.scene), size = new THREE.Vector3(); box.getSize(size);
+    gltf.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(gltf.scene, true), size = new THREE.Vector3(); box.getSize(size); // precise: skinned, posed size
     characterData.set(def.key, { scene: gltf.scene, clips: gltf.animations, scale: PERSON_H / Math.max(size.y, 0.001), minY: box.min.y, centerX: (box.min.x + box.max.x) / 2, centerZ: (box.min.z + box.max.z) / 2 });
     characterPools.set(def.key, []);
   }, undefined, () => { /* low-poly instanced fallback remains active */ });
@@ -802,7 +809,7 @@ export function createView(canvas, MAP) {
     const riders=life.agents.filter(a=>a.mode!=='inside'&&!a.shuttle&&a.ride).slice(0,MAXP);
     riders.forEach((a, i) => {
       const p = agentPosition(life, a), h = a.heading ?? Math.atan2(a.x - p.x, a.y - p.y), lean = Math.sin(time / 300 + a.id) * 0.04;
-      const base = baseMatrix(p.x, 0, p.y, h, lean).clone();
+      const base = baseMatrix(p.x, 0, p.y, h, lean, 0, PERSON_H / 0.42).clone(); // bike + seated rider scaled to sit right next to cars
       putPart(bike.frame, i, base, 0, 0.10, 0); bike.frame.setColorAt(i, color.set(BIKE_COLOURS[a.id % BIKE_COLOURS.length]));
       putPart(bike.seat, i, base, 0, 0.16, -0.05);
       putPart(bike.stem, i, base, 0, 0.16, 0.13, 1, 1, 1, -0.35);
